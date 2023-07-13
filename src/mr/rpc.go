@@ -15,11 +15,60 @@ import "strconv"
 //
 
 type ExampleArgs struct {
-	X int
+	Finished bool 
+	WorkerId int 
+	Filename string
+}
+
+type RegisterWorkerArgs struct {
+}
+
+type RegisterWorkerReply struct {
+	WorkerId int 
 }
 
 type ExampleReply struct {
-	Y int
+	TaskId int
+	Filename string 
+}
+
+type GetTaskRequest struct {
+	WorkerId int 
+	
+
+}
+
+// get a task from coordinator 
+// sent by worker 
+type GetTaskResponse struct {
+
+	TaskId int 
+	Files []string
+	TaskType int // 1 for map, 2 for reduce, 3 for no task remaining
+	NReduce int 
+
+}
+
+// have the coordinator send a task
+// to the worker 
+type SendTask struct {
+
+
+}
+
+// submit a completed task to the coordinator 
+
+type SubmitTaskArgs struct {
+	TaskId int 
+	Files []string 
+	TaskType int 
+	WorkerId int
+
+
+}
+
+type SubmitTaskReply struct {
+	Success int 
 }
 
 // Add your RPC definitions here.
@@ -34,3 +83,5 @@ func coordinatorSock() string {
 	s += strconv.Itoa(os.Getuid())
 	return s
 }
+
+

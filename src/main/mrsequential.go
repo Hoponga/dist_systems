@@ -30,6 +30,7 @@ func main() {
 
 	mapf, reducef := loadPlugin(os.Args[1])
 
+	
 	//
 	// read each input file,
 	// pass it to Map,
