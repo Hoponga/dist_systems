@@ -9,8 +9,10 @@ import "io/ioutil"
 import "plugin"
 import "fmt"
 import "sync"
-import "encoding/json"
-import "path/filepath"
+
+// Shouldn't actually need these imports 
+//import "encoding/json"
+//import "path/filepath"
 
 
 
@@ -41,6 +43,7 @@ func (c *Coordinator) RegisterWorker(args *RegisterWorkerArgs, reply *RegisterWo
 		c.mu.Unlock() 
 	}
 	return nil 
+	
 
 }
 
@@ -56,6 +59,7 @@ func (c *Coordinator) GetTask(args *GetTaskRequest, reply *GetTaskResponse) erro
 		reply.TaskType = 1
 		reply.NReduce = c.nReduce 
 		fmt.Println(reply)
+		c.mapJobs -= 1 
 		c.taskId += 1
 
 		c.mapFiles = c.mapFiles[1:]
@@ -81,7 +85,7 @@ func (c *Coordinator) GetTask(args *GetTaskRequest, reply *GetTaskResponse) erro
 func (c *Coordinator) ReceiveTask(args *SubmitTaskArgs, reply *SubmitTaskReply) error {
 	if (args.TaskType == 1) {
 		// finished map task 
-		fmt.Fprintf(os.Stderr, "%v finished %d map task", args.WorkerId, args.TaskId); 
+		fmt.Fprintf(os.Stderr, "\n%v finished %d map task\n", args.WorkerId, args.TaskId); 
 		c.mu.Lock()
 		c.reduceFiles = append(c.reduceFiles, args.Files...)
 
@@ -115,6 +119,7 @@ func (c *Coordinator) ReceiveTask(args *SubmitTaskArgs, reply *SubmitTaskReply) 
 
 
 }
+
 
 // Your code here -- RPC handlers for the worker to call.
 
@@ -170,6 +175,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c.mapJobs = len(files)
 	c.reduceJobs = nReduce 
 	c.mapFiles = files 
+	c.reduceFiles = []string{}
 
 	c.taskId = 1
 	c.reduceTaskId = 1

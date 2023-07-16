@@ -8,6 +8,7 @@ import "os"
 import "io/ioutil"
 import "path/filepath"
 import "encoding/json"
+import "sort"
 
 
 //
@@ -18,6 +19,13 @@ type KeyValue struct {
 	Value string
 }
 
+
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 //
 // use ihash(key) % NReduce to choose the reduce
@@ -156,6 +164,76 @@ func mapJob(inputFiles []string, workerId int, nReduce int, taskId int, mapf fun
 	
 }
 
+func reduceJob(reduceFiles []string, workerId int, nReduce int, taskId int, reducef func(string, []string) string) string {
+	OUT_FILE_DIRECTORY := "mr_int_files"
+
+	patternString := filepath.Join(OUT_FILE_DIRECTORY, fmt.Sprintf("mr-*-*-%d", taskId)); 
+	my_reduce_files := []string{}
+
+	// entries, err := os.ReadDir(root); 
+	// if err != nil {
+	// 	fmt.Println(err)
+	// }
+
+	for _, reduceFile := range reduceFiles {
+		reduceFilepath := filepath.Join(OUT_FILE_DIRECTORY, reduceFile)
+
+		is_match, _ := filepath.Match(patternString, reduceFilepath)
+
+
+		if is_match {
+			my_reduce_files = append(my_reduce_files, reduceFilepath)
+
+		}
+	}
+
+	my_kvs := []KeyValue{}
+
+	for _, filepath := range my_reduce_files {
+		file, _ := os.Open(filepath)
+		dec := json.NewDecoder(file)
+		fmt.Println(filepath)
+		
+
+		for {
+			var kv KeyValue
+			if err := dec.Decode(&kv); err != nil {
+			  fmt.Println(err)
+			  break
+			}
+			my_kvs = append(my_kvs, kv)
+		  }
+	}
+
+	sort.Sort(ByKey(my_kvs)) 
+	oname := fmt.Sprintf("mr-out-%d", taskId)
+	ofile, _ := os.Create(oname)
+
+	i := 0
+	for i < len(my_kvs) {
+		j := i + 1
+		for j < len(my_kvs) && my_kvs[j].Key == my_kvs[i].Key {
+			j++
+		}
+		current_values := []string{}
+
+		for k := i; k < j; k++ {
+			current_values = append(current_values, my_kvs[k].Value)
+
+		}
+		this_output := reducef(my_kvs[i].Key, current_values) // all instances of Key, each "value" shoudl just be one 
+
+		fmt.Fprintf(ofile, "%v %v\n", my_kvs[i].Key, this_output)
+
+		i = j 
+	}
+	ofile.Close() 
+	return oname
+
+
+
+}
+
 //
 // main/mrworker.go calls this function.
 //
@@ -186,12 +264,15 @@ func Worker(mapf func(string, string) []KeyValue,
 
 			_ = submitTask(outputFiles, workerId, taskResponse.TaskId, 1); 
 
-		} else {
+		} else if taskResponse.TaskType == 2 {
 			// do reduce
+			fmt.Println(taskResponse.Files)
+			outputFile := reduceJob(taskResponse.Files, workerId, taskResponse.NReduce, taskResponse.TaskId, reducef); 
+			fmt.Println("Wrote reduce output to %v", outputFile)
 		}
 
-		taskResponsePointer := RequestTask(workerId)
-		taskResponse := *taskResponsePointer 
+		taskResponsePointer = RequestTask(workerId)
+		taskResponse = *taskResponsePointer 
 		fmt.Println(taskResponse.TaskId)
 
 
