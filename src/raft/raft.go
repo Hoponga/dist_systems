@@ -19,6 +19,7 @@ package raft
 
 import (
 	//	"bytes"
+	"fmt"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -27,7 +28,6 @@ import (
 	//	"6.5840/labgob"
 	"6.5840/labrpc"
 )
-
 
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -62,6 +62,18 @@ type Raft struct {
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
+	currentTerm int
+	votedFor    int
+	log         []interface{}
+
+	commitIndex int
+	lastApplied int
+
+	nextIndex  []int
+	matchIndex []int
+
+	state int // 1 for follower, 2 for candidate, 3 for leader
+
 }
 
 // return currentTerm and whether this server
@@ -92,7 +104,6 @@ func (rf *Raft) persist() {
 	// rf.persister.Save(raftstate, nil)
 }
 
-
 // restore previously persisted state.
 func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
@@ -113,7 +124,6 @@ func (rf *Raft) readPersist(data []byte) {
 	// }
 }
 
-
 // the service says it has created a snapshot that has
 // all info up to and including index. this means the
 // service no longer needs the log through (and including)
@@ -123,22 +133,37 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
-
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
+	Term         int
+	CandidateId  int
+	LastLogIndex int
+	LastLogTerm  int
 }
 
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
 type RequestVoteReply struct {
 	// Your data here (2A).
+	Term        int
+	VoteGranted int // 1 if candidate received vote, else 0
+
 }
 
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+	if args.Term < rf.currentTerm {
+		reply.VoteGranted = -1
+		reply.Term = rf.currentTerm
+	} else if rf.votedFor == nil || rf.votedFor == args.CandidateId {
+		reply.VoteGranted = 1
+		reply.Term = rf.currentTerm
+
+	}
+
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -173,7 +198,6 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	return ok
 }
 
-
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
 // server isn't the leader, returns false. otherwise start the
@@ -192,7 +216,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (2B).
-
 
 	return index, term, isLeader
 }
@@ -221,7 +244,39 @@ func (rf *Raft) ticker() {
 
 		// Your code here (2A)
 		// Check if a leader election should be started.
+		if rf.state == 1 {
+			rf.state = 2
+			votes := 0
+			for i, _ := range rf.peers {
+				args := RequestVoteArgs{}
+				args.CandidateId = rf.me
+				args.LastLogIndex = rf.commitIndex
+				args.LastLogTerm = rf.lastApplied
+				args.Term = rf.currentTerm
+				reply := RequestVoteReply{}
 
+				ok := rf.sendRequestVote(i, &args, &reply)
+				if ok {
+					if reply.VoteGranted == 1 {
+						votes += 1
+
+						// "If a candidate or leader discovers that its term is out of date, it immediately reverts to follower state."
+						if reply.Term > rf.currentTerm {
+							rf.state = 1
+							return
+						}
+					}
+
+				} else {
+					fmt.Printf("%t", ok)
+
+				}
+
+			}
+			if votes > len(rf.peers) {
+				rf.state = 3
+			}
+		}
 
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
@@ -253,7 +308,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
-
 
 	return rf
 }
