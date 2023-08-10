@@ -66,8 +66,9 @@ type Raft struct {
 	votedFor    int
 	log         []interface{}
 
-	commitIndex int
-	lastApplied int
+	commitIndex     int
+	lastApplied     int
+	electionTimeout int64
 
 	nextIndex  []int
 	matchIndex []int
@@ -83,6 +84,9 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	// Your code here (2A).
+	term = rf.currentTerm
+	isleader = rf.state == 3
+	fmt.Printf("%d thinks %t isleader", rf.me, isleader)
 	return term, isleader
 }
 
@@ -169,7 +173,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = -1
 		reply.Term = rf.currentTerm
 	} else if rf.votedFor == -1 {
+		rf.electionTimeout = 0
 		reply.VoteGranted = 1
+		rf.votedFor = args.CandidateId
 		reply.Term = rf.currentTerm
 
 	} else if rf.votedFor != -1 && rf.votedFor != args.CandidateId {
@@ -183,9 +189,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if rf.state != 2 && args.Term >= rf.currentTerm {
 		rf.state = 1
 		reply.Success = 1
+		rf.electionTimeout = 0
 		reply.Term = rf.currentTerm
+		rf.votedFor = -1
+		rf.currentTerm = args.Term
 
 	} else if args.Term < rf.currentTerm {
+
 		reply.Success = -1
 		reply.Term = rf.currentTerm
 
@@ -275,14 +285,18 @@ func (rf *Raft) heartbeat() {
 	for rf.killed() == false {
 		if rf.state == 3 {
 			for i, _ := range rf.peers {
-				if rf.state == 3 {
+				if rf.state == 3 && i != rf.me {
 					args := AppendEntriesArgs{}
 					reply := AppendEntriesReply{}
 					args.Term = rf.currentTerm
 					args.LeaderId = rf.me
 					ok := rf.sendAppendEntries(i, &args, &reply)
 					if ok {
-						fmt.Printf("%d Sent heartbeat\n", rf.me)
+						rf.electionTimeout = 0
+						fmt.Printf("%d Sent heartbeat to %d\n", rf.me, i)
+						if reply.Term > rf.currentTerm {
+							rf.currentTerm = reply.Term
+						}
 
 					}
 
@@ -301,13 +315,15 @@ func (rf *Raft) ticker() {
 
 		// Your code here (2A)
 		// Check if a leader election should be started.
-		if rf.state == 1 && rf.votedFor == -1 {
+		if rf.state == 1 && rf.votedFor == -1 && rf.electionTimeout > 350 {
+			rf.electionTimeout = 0
 			fmt.Printf("%d Starting election \n", rf.me)
 			rf.currentTerm += 1
 
 			rf.state = 2
 			votes := 1 // myself
 			for i, _ := range rf.peers {
+
 				if rf.state == 1 {
 					break
 				}
@@ -350,6 +366,7 @@ func (rf *Raft) ticker() {
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
 		ms := 150 + (rand.Int63() % 300)
+		rf.electionTimeout += ms
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
 }
