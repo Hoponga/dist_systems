@@ -20,6 +20,7 @@ package raft
 import (
 	//	"bytes"
 	"fmt"
+	"math"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -28,6 +29,8 @@ import (
 	//	"6.5840/labgob"
 	"6.5840/labrpc"
 )
+
+var ELECTION_TIMEOUT_MAX = 200 // in ms
 
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -63,12 +66,15 @@ type Raft struct {
 	// state a Raft server must maintain.
 
 	currentTerm int
+	myVotes     int // counter for candidates
 	votedFor    int
 	log         []interface{}
 
 	commitIndex     int
 	lastApplied     int
 	electionTimeout int64
+
+	totalReceivedVotes int
 
 	nextIndex  []int
 	matchIndex []int
@@ -80,13 +86,18 @@ type Raft struct {
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
 	var term int
 	var isleader bool
 	// Your code here (2A).
 	term = rf.currentTerm
 	isleader = rf.state == 3
-	fmt.Printf("%d thinks %t isleader", rf.me, isleader)
+	if isleader {
+		//fmt.Printf("%d thinks it's the leader\n", rf.me)
+	}
+	//fmt.Printf("%d thinks %t isleader", rf.me, isleader)
 	return term, isleader
 }
 
@@ -169,10 +180,12 @@ type AppendEntriesReply struct {
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	if args.Term < rf.currentTerm {
 		reply.VoteGranted = -1
 		reply.Term = rf.currentTerm
-	} else if rf.votedFor == -1 {
+	} else if rf.votedFor == -1 || args.Term > rf.currentTerm {
 		rf.electionTimeout = 0
 		reply.VoteGranted = 1
 		rf.votedFor = args.CandidateId
@@ -186,20 +199,47 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	if rf.state != 2 && args.Term >= rf.currentTerm {
-		rf.state = 1
+
+	//fmt.Printf("%d handling heartbeat from %d\n", rf.me, args.LeaderId)
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if args.Term < rf.currentTerm {
+		reply.Success = -1
+	} else {
 		reply.Success = 1
 		rf.electionTimeout = 0
-		reply.Term = rf.currentTerm
-		rf.votedFor = -1
+		if rf.state == 3 {
+			fmt.Printf("%d converting to follower...\n", rf.me)
+		}
+		rf.state = 1
 		rf.currentTerm = args.Term
 
-	} else if args.Term < rf.currentTerm {
-
-		reply.Success = -1
-		reply.Term = rf.currentTerm
-
 	}
+	// if (args.Term > rf.currentTerm && rf.state == 3) || (rf.state != 1 && args.Term >= rf.currentTerm) {
+
+	// 	fmt.Printf("%d converting to follower %d %d \n", rf.me, args.Term, rf.currentTerm)
+	// 	reply.Success = 1
+	// 	rf.state = 1
+	// 	rf.electionTimeout = 0
+	// 	reply.Term = rf.currentTerm
+	// 	rf.votedFor = -1
+	// 	rf.currentTerm = args.Term
+
+	// } else if rf.state == 1 && args.Term >= rf.currentTerm {
+	// 	reply.Success = 1
+	// 	rf.state = 1
+	// 	rf.electionTimeout = 0
+	// 	reply.Term = rf.currentTerm
+	// 	rf.votedFor = -1
+	// 	rf.currentTerm = args.Term
+	// } else if args.Term < rf.currentTerm {
+
+	// 	reply.Success = -1
+	// 	reply.Term = rf.currentTerm
+
+	// } else {
+	// 	fmt.Printf("me is %d, supposed leader is %d, myterm is %d, leader's term is %d\n", rf.me, args.LeaderId, rf.currentTerm, args.Term)
+	// }
 
 }
 
@@ -283,28 +323,41 @@ func (rf *Raft) killed() bool {
 
 func (rf *Raft) heartbeat() {
 	for rf.killed() == false {
+		if rf.state != 3 {
+			return
+		}
 		if rf.state == 3 {
+			//fmt.Printf("%d is leader\n", rf.me)
+			rf.mu.Lock()
+			args := AppendEntriesArgs{
+				Term:     rf.currentTerm,
+				LeaderId: rf.me,
+			}
+			rf.mu.Unlock()
 			for i, _ := range rf.peers {
-				if rf.state == 3 && i != rf.me {
-					args := AppendEntriesArgs{}
-					reply := AppendEntriesReply{}
-					args.Term = rf.currentTerm
-					args.LeaderId = rf.me
-					ok := rf.sendAppendEntries(i, &args, &reply)
-					if ok {
-						rf.electionTimeout = 0
-						fmt.Printf("%d Sent heartbeat to %d\n", rf.me, i)
-						if reply.Term > rf.currentTerm {
-							rf.currentTerm = reply.Term
+
+				go func(destination int) {
+					if rf.state != 3 {
+						return
+					}
+					if rf.state == 3 && destination != rf.me {
+						reply := AppendEntriesReply{}
+						//fmt.Printf("%d sending heartbeat to %d\n", rf.me, destination)
+						ok := rf.sendAppendEntries(destination, &args, &reply)
+						if ok {
+
+						} else {
+							//fmt.Printf("%d failed heartbeat to %d\n", rf.me, destination)
 						}
 
 					}
 
-				}
+				}(i)
+
 			}
 
 		}
-		ms := 100
+		ms := 50
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 
 	}
@@ -312,54 +365,117 @@ func (rf *Raft) heartbeat() {
 
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
+		//fmt.Printf("%d is ticking %d\n", rf.me, rf.electionTimeout)
 
 		// Your code here (2A)
 		// Check if a leader election should be started.
-		if rf.state == 1 && rf.votedFor == -1 && rf.electionTimeout > 350 {
+		fmt.Printf("%d election checking %d %d \n", rf.me, rf.electionTimeout, int64(ELECTION_TIMEOUT_MAX))
+		if rf.state != 3 && rf.electionTimeout > int64(ELECTION_TIMEOUT_MAX) {
 			rf.electionTimeout = 0
 			fmt.Printf("%d Starting election \n", rf.me)
 			rf.currentTerm += 1
 
 			rf.state = 2
-			votes := 1 // myself
+			rf.myVotes = 1 // myself
+			rf.votedFor = rf.me
+
+			neededVotes := int(math.Ceil(float64(len(rf.peers)) / 2.0))
+			goodVotes := 1
+			totalReceivedVotes := 1
+			term := rf.currentTerm
+
+			votechan := make(chan int)
+
 			for i, _ := range rf.peers {
-
-				if rf.state == 1 {
-					break
+				if i == rf.me {
+					continue
 				}
-				args := RequestVoteArgs{}
-				args.CandidateId = rf.me
-				args.LastLogIndex = rf.commitIndex
-				args.LastLogTerm = rf.lastApplied
-				args.Term = rf.currentTerm
-				reply := RequestVoteReply{}
 
-				ok := rf.sendRequestVote(i, &args, &reply)
+				// if our election timeout has ran out,
+				if rf.electionTimeout > int64(ELECTION_TIMEOUT_MAX) {
+					go rf.ticker()
+					return
 
-				if ok {
-					fmt.Printf("%d Received vote %d at term %d \n", rf.me, reply.VoteGranted, reply.Term)
-					if reply.VoteGranted == 1 {
-						votes += 1
-						//fmt.Printf("%d Received vote\n", rf.me)
+				}
 
-						// "If a candidate or leader discovers that its term is out of date, it immediately reverts to follower state."
-						if reply.Term > rf.currentTerm {
-							rf.state = 1
+				go func(destination int) {
 
-						}
+					args := RequestVoteArgs{}
+					args.CandidateId = rf.me
+					args.LastLogIndex = rf.commitIndex
+					args.LastLogTerm = rf.lastApplied
+					args.Term = rf.currentTerm
+					reply := RequestVoteReply{
+						Term:        -1,
+						VoteGranted: -1,
+					}
+
+					ok := rf.sendRequestVote(destination, &args, &reply)
+
+					if ok {
+
+						fmt.Printf("%d Received vote %d at term %d from %d\n", rf.me, reply.VoteGranted, reply.Term, destination)
+						votechan <- reply.VoteGranted
+						// if reply.VoteGranted != 1 {
+						// 	return
+						// } else if reply.VoteGranted == 1 {
+						// 	rf.mu.Lock()
+						// 	defer rf.mu.Unlock()
+						// 	rf.myVotes += 1
+
+						// 	// "If a candidate or leader discovers that its term is out of date, it immediately reverts to follower state."
+						// 	if reply.Term > rf.currentTerm {
+						// 		rf.state = 1
+						// 		rf.myVotes = 0
+
+						// 	}
+
+						// 	cond.Broadcast()
+
+						// }
+
+					} else {
+						fmt.Printf("rpc to %d went wrong", destination)
+						votechan <- reply.VoteGranted
 
 					}
 
-				} else {
-					fmt.Printf("%t", ok)
-
-				}
+				}(i)
 
 			}
-			if votes > len(rf.peers)/2 && (rf.state != 1) {
-				rf.state = 3 // election successfully completed
-				fmt.Printf("%d IS ELECTED LEADER FOR TERM %d\n", rf.me, rf.currentTerm)
+			for {
+				result := <-votechan
+				totalReceivedVotes++
+				if result == 1 {
+					goodVotes++
+
+				}
+				if goodVotes > len(rf.peers)/2 {
+
+					break
+				}
+				if totalReceivedVotes >= len(rf.peers) {
+					break
+				}
+				fmt.Printf("%d hi\n", rf.me)
+				time.Sleep(10 * time.Millisecond)
+			}
+			rf.mu.Lock()
+			fmt.Printf("%d\n", neededVotes)
+			if rf.state != 2 {
+				fmt.Printf("%d is no longer a candidate \n", rf.me)
+				rf.electionTimeout = 0
+				rf.mu.Unlock()
+
+			} else if goodVotes > len(rf.peers)/2 && term == rf.currentTerm {
+				rf.state = 3
+				rf.electionTimeout = 0
+				rf.mu.Unlock()
+				fmt.Printf("\n=====%d ELECTED LEADER FOR TERM %d\n", rf.me, rf.currentTerm)
 				go rf.heartbeat()
+
+			} else {
+				rf.mu.Unlock()
 			}
 		}
 
